@@ -3,10 +3,11 @@ name: release
 # 打 v* 标签时构建全部平台并发布到 GitHub Release；
 # 手动触发（workflow_dispatch）只构建并上传 artifact，方便先验证。
 #
-# 二进制都在各自架构的 runner 上原生编译（不依赖 Docker/cross）：
+# 二进制都在各自架构的 runner 上原生编译（不依赖 Docker/cross，也不需要 musl-gcc：
+# Rust 的 musl target 自带 self-contained CRT 与 libc.a，crt-static 为默认值）：
 #   windows-x64        windows-latest      x86_64-pc-windows-msvc
-#   linux-x64-musl     ubuntu-latest       x86_64-unknown-linux-musl   + musl-tools
-#   linux-aarch64-musl ubuntu-24.04-arm    aarch64-unknown-linux-musl  + musl-tools
+#   linux-x64-musl     ubuntu-latest       x86_64-unknown-linux-musl
+#   linux-aarch64-musl ubuntu-24.04-arm    aarch64-unknown-linux-musl
 
 on:
   push:
@@ -81,13 +82,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform }}
-
-      - name: 安装 musl 工具链
-        if: startsWith(matrix.platform, 'linux-')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          musl-gcc --version
 
       - name: 取回模型权重
         uses: actions/download-artifact@v4

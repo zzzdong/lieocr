@@ -154,7 +154,10 @@ git tag v0.0.1 && git push origin v0.0.1   # 触发 CI 构建三平台并发布 
 ```
 
 CI（`.github/workflows/release.yml`）在各自架构的原生环境编译：Windows MSVC、
-`ubuntu-latest` + `musl-gcc`、`ubuntu-24.04-arm` + `musl-gcc`，产物为解压即用的压缩包。
+`ubuntu-latest`、`ubuntu-24.04-arm`，产物为解压即用的压缩包。
+
+Linux 采用 musl target：Rust 自 1.63 起为 musl 提供 self-contained 的 CRT 与 `libc.a`，
+`crt-static` 又是默认值，因此无需 `musl-gcc` 之类的工具链也能得到完全静态的二进制。
 
 ## 已知限制
 
