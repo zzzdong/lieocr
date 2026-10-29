@@ -1,0 +1,155 @@
+name: release
+
+# 打 v* 标签时构建全部平台并发布到 GitHub Release；
+# 手动触发（workflow_dispatch）只构建并上传 artifact，方便先验证。
+#
+# 二进制都在各自架构的 runner 上原生编译（不依赖 Docker/cross）：
+#   windows-x64        windows-latest      x86_64-pc-windows-msvc
+#   linux-x64-musl     ubuntu-latest       x86_64-unknown-linux-musl   + musl-tools
+#   linux-aarch64-musl ubuntu-24.04-arm    aarch64-unknown-linux-musl  + musl-tools
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 模型不进仓库：统一下载一次 ONNX 并转换成 .bpk，供三个平台复用
+  weights:
+    name: 准备模型权重
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 ONNX / bpk / onnx2burn
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/*.onnx
+            models/*.bpk
+            ~/.cargo/bin/onnx2burn
+          key: models-${{ runner.os }}-v1
+
+      - name: 下载 ONNX 并转换
+        run: bash scripts/fetch-models.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weights
+          path: models/*.bpk
+          if-no-files-found: error
+          retention-days: 2
+
+  build:
+    name: 构建 ${{ matrix.platform }}
+    needs: weights
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_dir: target/x86_64-pc-windows-msvc/release
+          - platform: linux-x64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            bin_dir: target/x86_64-unknown-linux-musl/release
+          - platform: linux-aarch64-musl
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            bin_dir: target/aarch64-unknown-linux-musl/release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - name: 安装 musl 工具链
+        if: startsWith(matrix.platform, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          musl-gcc --version
+
+      - name: 取回模型权重
+        uses: actions/download-artifact@v4
+        with:
+          name: weights
+          path: models
+
+      - name: 构建
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: 校验产物是静态链接
+        if: startsWith(matrix.platform, 'linux-')
+        shell: bash
+        run: |
+          file "${{ matrix.bin_dir }}/lieocr"
+          # 新版 Rust 默认 PIE，musl 静态可执行文件会显示 static-pie linked
+          file "${{ matrix.bin_dir }}/lieocr" | grep -Eq "statically linked|static-pie linked"
+
+      - name: 打包
+        shell: bash
+        env:
+          BIN_DIR: ${{ matrix.bin_dir }}
+        run: bash scripts/package.sh ${{ matrix.platform }}
+
+      - name: 校验发布包内容
+        shell: bash
+        run: |
+          ls -lh dist/
+          for f in dist/*.zip; do
+            if [ -f "$f" ]; then
+              python3 -c "import sys,zipfile; [print(f'{i.file_size:>12}  {i.filename}') for i in zipfile.ZipFile(sys.argv[1]).infolist()]" "$f"
+            fi
+          done
+          for f in dist/*.tar.gz; do
+            if [ -f "$f" ]; then
+              tar -tzvf "$f"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: 发布 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

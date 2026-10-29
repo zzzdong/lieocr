@@ -1,0 +1,9 @@
+/target
+/dist
+
+# 模型：ONNX 源文件与转换产物由 scripts/fetch-models.sh 重建
+models/*.onnx
+models/*.bpk
+
+# 调试输出
+debug_*.png
