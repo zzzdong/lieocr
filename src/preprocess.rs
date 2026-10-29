@@ -355,9 +355,9 @@ fn box_blur(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
         for x in 0..w {
             let x0 = x.saturating_sub(r);
             let x1 = (x + r + 1).min(w);
-            let sum = integral[y1 * (w + 1) + x1] - integral[y0 * (w + 1) + x1]
-                - integral[y1 * (w + 1) + x0]
-                + integral[y0 * (w + 1) + x0];
+            // 先加后减：A+D 恒 >= B+C；按 A-B-C+D 的顺序中间结果会下溢
+            let sum = (integral[y1 * (w + 1) + x1] + integral[y0 * (w + 1) + x0])
+                .saturating_sub(integral[y0 * (w + 1) + x1] + integral[y1 * (w + 1) + x0]);
             out[y * w + x] = (sum / ((y1 - y0) * (x1 - x0)) as u64) as u8;
         }
     }

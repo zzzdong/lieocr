@@ -15,7 +15,8 @@
 - **鲁棒预处理**：去阴影、自适应二值化、去横线（笔记本行线/表格线）、连通域与投影行切分，手写与手机拍照同样可用
 - **结构化**：输出文档树（标题层级 / 段落 / 图表 / 公式 / 页眉页脚），而不是一堆无结构的文本行
 - **Markdown 渲染**：标题、段落、GFM 表格；图片区域裁图后以 **base64 data URI 内嵌**，无需外部文件
-- **两种入口**：命令行（单图识别）与 HTTP 服务（上传识别）
+- **核心库化**：`src/lib.rs` 暴露 `Pipeline` / `Document` / `Renderer`，CLI 与 HTTP 服务都是薄调用方
+- **两种入口**：命令行（单图识别）与 HTTP 服务（独立 HTTP 线程 + 多线程推理 worker 池）
 - **渲染层可扩展**：`Renderer` trait 预留 PDF / DOCX 后端
 
 ## 快速开始
@@ -70,12 +71,26 @@ lieocr server -p 8080              # 启动 HTTP 服务
 | `-o, --output <FILE>` | 结果写入文件 |
 | `--no-layout` | 跳过版面检测 |
 | `--models-dir <DIR>` | 指定模型权重目录（优先级最高） |
+| `-w, --workers <N>` | 服务端推理 worker 线程数（0 = 按 CPU 核数自动，上限 4） |
+| `--queue <N>` | 服务端推理队列积压上限（0 = workers × 2，满了直接回 503） |
 
 ## HTTP 服务
 
 ```bash
-lieocr server --host 127.0.0.1 -p 8080
+lieocr server --host 127.0.0.1 -p 8080 -w 4
 ```
+
+线程模型：
+
+```
+http 线程（tokio，只做 IO）            推理 worker 池（N 个线程）
+请求解析 → 图片解码 ──有界队列──▶ Pipeline::analyze ──oneshot──▶ 响应编码
+```
+
+- 模型只在启动时加载一次（`Arc<Pipeline>`），所有 worker 共享，内存不随 worker 数增长
+- 队列满时 `POST /ocr` 立即返回 503，不会把请求无限堆在内存里
+- 单个请求 panic 只影响该请求，worker 线程继续服务
+- `Ctrl+C` 优雅退出：HTTP 线程停监听，主线程回收 worker
 
 | 接口 | 说明 |
 |---|---|
@@ -100,6 +115,20 @@ JSON 响应：
   ]
 }
 ```
+
+## 作为库使用
+
+```rust
+// Cargo.toml: lieocr = { path = "." }
+use lieocr::{MarkdownRenderer, Pipeline, Renderer};
+
+let rgb = lieocr::decode_image(&std::fs::read("test.png").unwrap()).unwrap();
+let doc = Pipeline::new().analyze(&rgb, true); // false = 跳过版面模型
+println!("{}", MarkdownRenderer.render(&doc));
+```
+
+`Pipeline` 是只读的，可放进 `Arc` 跨线程共享；`Document` 是与渲染无关的结构树，
+实现 `Renderer` trait 即可新增 PDF / DOCX 等后端。CLI 与服务端都只是这层 API 的调用方。
 
 ## 模型
 
@@ -130,8 +159,11 @@ models/                     # 统一模型目录
 ├── paddleocr.onnx / layout.onnx  # 原始模型（gitignore）
 └── paddleocr.bpk / layout.bpk    # 转换产物（gitignore）
 src/
-├── main.rs                 # CLI（clap）
-├── server.rs               # HTTP（axum）
+├── lib.rs                  # 库入口：重导出 Pipeline / Document / Renderer，decode_image
+├── main.rs                 # CLI（clap），逻辑全部来自 lib
+├── server/                 # HTTP 服务
+│   ├── mod.rs              # axum 路由 + 独立 HTTP 线程
+│   └── pool.rs             # 推理 worker 池（有界队列 + oneshot 回传）
 ├── pipeline.rs             # 图片 → 版面 → 识别 → 文档树
 ├── layout.rs               # 版面检测（DETR 后处理 + 阅读顺序 + IoU 去重）
 ├── preprocess.rs           # 去阴影、二值化、去横线、行切分

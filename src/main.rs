@@ -1,22 +1,13 @@
-mod document;
-mod layout;
-mod model;
-mod ocr;
-mod pipeline;
-mod preprocess;
-mod render;
-mod server;
-mod table;
+//! CLI 入口：解析参数，调用 `lieocr` 库完成识别或起服务。
 
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use crate::document::Document;
-use crate::pipeline::Pipeline;
-use crate::render::Renderer;
-use crate::render::markdown::MarkdownRenderer;
-use crate::render::plain::PlainRenderer;
+use lieocr::document::{Document, Node, NodeKind};
+use lieocr::layout::LABELS;
+use lieocr::server::{self, Config};
+use lieocr::{MarkdownRenderer, Pipeline, PlainRenderer, Renderer};
 
 #[derive(Parser)]
 #[command(
@@ -80,6 +71,12 @@ enum Command {
         /// 监听端口
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
+        /// 推理 worker 线程数（0 = 按 CPU 核数自动，上限 4）
+        #[arg(short = 'w', long, default_value_t = 0)]
+        workers: usize,
+        /// 推理队列积压上限（0 = workers * 2）
+        #[arg(long, default_value_t = 0)]
+        queue: usize,
     },
 }
 
@@ -92,23 +89,23 @@ fn main() {
         }
         None => cli.model.models_dir.clone(),
     };
-    model::set_models_dir(models_dir);
+    lieocr::set_models_dir(models_dir);
 
     match cli.command {
-        Some(Command::Server { host, port, .. }) => {
-            // 推理线程需要大栈：burn 生成的模型代码栈帧很大
-            let rt = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_stack_size(64 << 20)
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("创建 runtime 失败: {e}");
-                    std::process::exit(1);
-                }
+        Some(Command::Server {
+            host,
+            port,
+            workers,
+            queue,
+            ..
+        }) => {
+            let config = Config {
+                host,
+                port,
+                workers,
+                queue,
             };
-            if let Err(e) = rt.block_on(server::serve(host, port)) {
+            if let Err(e) = server::serve(config) {
                 eprintln!("服务异常: {e}");
                 std::process::exit(1);
             }
@@ -134,10 +131,22 @@ fn run_ocr(path: &Path, markdown: bool, out: Option<&Path>, no_layout: bool) {
     // 直接输出 Markdown 到 stdout 时，不能让日志混进文档
     let info = !markdown || out.is_some();
     if info {
-        println!("图片: {} ({}x{})\n", path.display(), rgb.width(), rgb.height());
+        println!(
+            "图片: {} ({}x{})\n",
+            path.display(),
+            rgb.width(),
+            rgb.height()
+        );
     }
 
-    let doc = Pipeline::new().analyze(&rgb, !no_layout);
+    // 推理线程需要大栈：burn 生成的模型代码栈帧很大
+    let doc = std::thread::Builder::new()
+        .name("ocr".to_owned())
+        .stack_size(64 << 20)
+        .spawn(move || Pipeline::new().analyze(&rgb, !no_layout))
+        .expect("无法创建推理线程")
+        .join()
+        .expect("推理线程异常退出");
 
     if info {
         println!("===== 结构树（{} 个顶层节点）=====", doc.children.len());
@@ -152,9 +161,12 @@ fn run_ocr(path: &Path, markdown: bool, out: Option<&Path>, no_layout: bool) {
 
     match out {
         Some(p) => {
-            std::fs::write(p, &output)
-                .unwrap_or_else(|e| panic!("写入 {} 失败: {e}", p.display()));
-            println!("\n已写入 {}（{} 字符）", p.display(), output.chars().count());
+            std::fs::write(p, &output).unwrap_or_else(|e| panic!("写入 {} 失败: {e}", p.display()));
+            println!(
+                "\n已写入 {}（{} 字符）",
+                p.display(),
+                output.chars().count()
+            );
         }
         None if markdown => print!("{output}"),
         None => println!("\n===== OCR 结果 =====\n{output}"),
@@ -163,38 +175,36 @@ fn run_ocr(path: &Path, markdown: bool, out: Option<&Path>, no_layout: bool) {
 
 /// 调试用：把文档树打印成缩进大纲。
 fn print_tree(doc: &Document, depth: usize) {
-    fn visit(nodes: &[crate::document::Node], depth: usize) {
+    fn visit(nodes: &[Node], depth: usize) {
         for n in nodes {
             let pad = "  ".repeat(depth);
             let desc = match &n.kind {
-                crate::document::NodeKind::Heading { level, text } => {
-                    format!("h{level}: {text}")
-                }
-                crate::document::NodeKind::Section { level, title, .. } => {
+                NodeKind::Heading { level, text } => format!("h{level}: {text}"),
+                NodeKind::Section { level, title, .. } => {
                     format!("section(h{level}): {title}")
                 }
-                crate::document::NodeKind::Paragraph { text } => {
+                NodeKind::Paragraph { text } => {
                     let brief: String = text.chars().take(30).collect();
                     format!(
                         "p: {brief}{}",
                         if text.chars().count() > 30 { "…" } else { "" }
                     )
                 }
-                crate::document::NodeKind::Figure { image, .. } => match image {
+                NodeKind::Figure { image, .. } => match image {
                     Some(i) => format!("figure {}x{}", i.width, i.height),
                     None => "figure".to_owned(),
                 },
-                crate::document::NodeKind::Table { rows, .. } => format!(
+                NodeKind::Table { rows, .. } => format!(
                     "table {}x{}",
                     rows.len(),
                     rows.first().map(|r| r.len()).unwrap_or(0)
                 ),
-                crate::document::NodeKind::Formula { .. } => "formula".to_owned(),
-                crate::document::NodeKind::Decoration { .. } => "decoration".to_owned(),
+                NodeKind::Formula { .. } => "formula".to_owned(),
+                NodeKind::Decoration { .. } => "decoration".to_owned(),
             };
             println!(
                 "{pad}- {desc}  [{} {:.2} {}x{} @{},{},{},{}]",
-                crate::layout::LABELS.get(n.label).copied().unwrap_or("?"),
+                LABELS.get(n.label).copied().unwrap_or("?"),
                 n.score,
                 n.bbox.width(),
                 n.bbox.height(),

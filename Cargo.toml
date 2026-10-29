@@ -1,6 +1,6 @@
 [package]
 name = "lieocr"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.85"
 description = "纯 Rust 文档 OCR：版面分析 + 文本识别 + 文档结构树，输出 Markdown，提供 CLI 与 HTTP 服务"
@@ -17,5 +17,5 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["multipart"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal"] }
 serde_json = "1"
