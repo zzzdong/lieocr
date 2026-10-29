@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "纯 Rust 文档 OCR：版面分析 + 文本识别 + 文档结构树，输出 Markdown，提供 CLI 与 HTTP 服务"
 readme = "README.md"
 license = "Apache-2.0"
+repository = "https://github.com/zzzdong/lieocr"
 keywords = ["ocr", "paddleocr", "document-layout", "burn", "text-recognition"]
 categories = ["computer-vision", "multimedia::images"]
 

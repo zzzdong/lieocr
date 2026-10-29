@@ -1,5 +1,8 @@
 # lieocr
 
+[![release](https://github.com/zzzdong/lieocr/actions/workflows/release.yml/badge.svg)](https://github.com/zzzdong/lieocr/actions/workflows/release.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 纯 Rust 的文档 OCR：**版面分析 → 文本识别 → 文档结构树 → Markdown**。
 
 模型用 [burn](https://burn.dev) 直接推理（ONNX 经 [onnx2burn](https://github.com/tracel-ai/burn-onnx) 转换为原生 Rust 代码），
@@ -19,7 +22,7 @@
 
 ### 使用发布包
 
-从 Releases 下载对应平台的压缩包，解压即用（压缩包内已含模型）：
+从 [Releases](https://github.com/zzzdong/lieocr/releases) 下载对应平台的压缩包，解压即用（压缩包内已含模型）：
 
 ```bash
 ./lieocr test.png -m          # 输出 Markdown
@@ -39,6 +42,9 @@
 模型权重不进仓库，需要先下载 ONNX 并转换：
 
 ```bash
+git clone https://github.com/zzzdong/lieocr.git
+cd lieocr
+
 # 依赖：curl、sha256sum、onnx2burn（cargo install burn-onnx --version 0.22.0）
 bash scripts/fetch-models.sh     # 下载约 200 MB 并生成 models/*.bpk
 cargo build --release
